@@ -1,0 +1,763 @@
+---
+title: "Discriminatory Analysis"
+author: "Jacob T. Nearing"
+date: "7/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("/home/jacob/projects/HACKATHON_ANCOM_FIX_21_03_13/Hackathon/Studies/")
+
+
+display_items_out <- "/home/jacob/GitHub_Repos/Clean_Hackathon/Display_items/"
+
+library(ROCR)
+library(pheatmap)
+library(foreach)
+library(doParallel)
+library(ggplot2)
+library(reshape2)
+library(cowplot)
+library(dplyr)
+
+
+library(RColorBrewer)
+library(ggbeeswarm)
+n <- 38
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+
+Data_set_names <- c(ArcticFireSoils="Soil - Fires",
+                         ArcticFreshwaters="Freshwater - Arctic",
+                         ArcticTransects="Soil - Arctic",
+                         art_scher="Human - RA",
+                         asd_son= "Human - ASD",
+                         BISCUIT= "Human - CD (1)",
+                         Blueberry= "Soil - Blueberry",
+                         cdi_schubert="Human - C. diff (1)",
+                         cdi_vincent="Human - C. diff (2)",
+                         Chemerin="Mouse Facilities",
+                         crc_baxter="Human - CC (1)",
+                         crc_zeller="Human - CC (2)",
+                         edd_singh="Human - Inf.",
+                         Exercise="Mouse - Exercised",
+                         glass_plastic_oberbeckmann="Marine - Plastic (4)",
+                         GWMC_ASIA_NA="WWSR - Continents",
+                         GWMC_HOT_COLD="WWSR - Temp.",
+                         hiv_dinh="Human - HIV (1)",
+                         hiv_lozupone="Human - HIV (2)",
+                         hiv_noguerajulian="Human - HIV (3)",
+                         ibd_gevers="Human - CD (2)",
+                         ibd_papa="Human - IBD",
+                         Ji_WTP_DS="Freshwater - Treat.",
+                         MALL="Human - ALL",
+                         ob_goodrich="Human - OB (1)",
+                         ob_ross="Human - OB (2)",
+                         ob_turnbaugh="Human - OB (3)",
+                         ob_zhu="Human - OB (4)",
+                         ###"ob_zupancic",
+                         Office="Built - Office",
+                         par_scheperjans="Human - Par.",
+                         sed_plastic_hoellein="Marine - Plastic (2)",
+                         sed_plastic_rosato="Marine - Plastic (5)",
+                         seston_plastic_mccormick="River - Plastic",
+                         sw_plastic_frere="Marine - Plastic (1)",
+                         sw_sed_detender="Marine - Sediment",
+                          t1d_alkanani="Human - T1D (1)",
+                         t1d_mejialeon="Human - T1D (2)",
+                         wood_plastic_kesy="Marine - Plastic (3)")
+
+tool_names <- c(aldex2="ALDEx2", ancom="ANCOM-II", corncob="corncob", deseq2="DESeq2", edger="edgeR", lefse="LEfSe", 
+                limma_voom_TMM="limma voom (TMM)", limma_voom_TMMwsp="limma voom (TMMwsp)", maaslin2="MaAsLin2",
+                maaslin2rare="MaAsLin2 (rare)", metagenomeSeq="metagenomeSeq", ttestrare="t-test (rare)", 
+                wilcoxonclr="Wilcoxon (CLR)", wilcoxonrare="Wilcoxon (rare)")
+
+
+## function to read in all the metadata files
+read_metadata <- function(study_list){
+  ret_meta <- list()
+  
+  for(i in 1:length(study_list)){
+    
+    meta_file <- list.files(study_list[i], pattern="*_meta*")
+    meta_file_name <- paste(study_list[i], meta_file, sep="/")
+    message(meta_file_name)
+    ret_meta[[study_list[i]]] <- read.table(meta_file_name, header=T, sep="\t", comment.char="", quote="", check.names = F, row.names = 1)
+  }
+  return(ret_meta)
+}
+```
+
+## load in data
+
+```{r}
+filt_results <- readRDS("/home/jacob/GitHub_Repos/Hackathon_testing/Data/Filt_results_21_04_07.RDS")
+unfilt_results <- readRDS("/home/jacob/GitHub_Repos/Hackathon_testing/Data/Unfilt_results_21_04_07.RDS")
+
+unfilt_study_tab  <- readRDS("/home/jacob/GitHub_Repos/Hackathon_testing/Data/unfilt_study_tab_21_04_07.RDS")
+filt_study_tab <- readRDS("/home/jacob/GitHub_Repos/Hackathon_testing/Data/filt_study_tab_21_04_07.RDS")
+
+## load in data classes
+hackathon_study_ids <- c("ArcticFireSoils",
+                         "ArcticFreshwaters",
+                         "ArcticTransects",
+                         "art_scher",
+                         "asd_son",
+                         "BISCUIT",
+                         "Blueberry",
+                         "cdi_schubert",
+                         "cdi_vincent",
+                         "Chemerin",
+                         "crc_baxter",
+                         "crc_zeller",
+                         "edd_singh",
+                         "Exercise",
+                         "glass_plastic_oberbeckmann",
+                         "GWMC_ASIA_NA",
+                         "GWMC_HOT_COLD",
+                         "hiv_dinh",
+                         "hiv_lozupone",
+                         "hiv_noguerajulian",
+                         "ibd_gevers",
+                         "ibd_papa",
+                         "Ji_WTP_DS",
+                         "MALL",
+                         "ob_goodrich",
+                         "ob_ross",
+                         "ob_turnbaugh",
+                         "ob_zhu",
+                         ###"ob_zupancic",
+                         "Office",
+                         "par_scheperjans",
+                         "sed_plastic_hoellein",
+                         "sed_plastic_rosato",
+                         "seston_plastic_mccormick",
+                         "sw_plastic_frere",
+                         "sw_sed_detender",
+                          "t1d_alkanani",
+                         "t1d_mejialeon",
+                         "wood_plastic_kesy")
+
+
+metadata <- read_metadata(hackathon_study_ids)
+```
+
+# Data generation
+## Function
+
+```{r}
+
+##Function takes in p_table and list of AUROC of features that are contained within that table..
+## it then returns a list containing the AUROC of all features that were found to be significant for each tool...
+
+get_sig_AUROC <- function(p_tab, AUROC_vec){
+  
+  ret_list <- list()
+  sig_feats <- vector()
+  
+  #make sure they are the same dims
+  
+  #make sure they are the same length
+  stopifnot(nrow(p_tab) == length(AUROC_vec))
+  
+  for(tool in colnames(p_tab)){
+    sig_feats <- rownames(p_tab)[which(p_tab[,tool] < 0.05)]
+    
+    ret_list[[tool]] <- AUROC_vec[sig_feats]
+    
+  }
+
+  return(ret_list)
+}
+
+
+#this function will calculate the AUROC of all features in a dataset depending on the normalization type.
+get_AUROC_all_feats <- function(study_tab, meta, norm_type="R.A"){
+   
+    ## Normalize table
+   if(norm_type=="R.A"){
+          study_tab_norm <- sweep(study_tab, 2, colSums(study_tab), '/')
+    }else if(norm_type=="CLR"){
+      study_tab_norm <- data.frame(apply(study_tab + 1, 2, function(x) {log(x) - mean (log(x))} ), check.names = F)
+    }else{
+      message("Please pick a normalization method")
+      stop()
+    }
+  
+    ## make sure metadata and study table have same samples
+    if(!identical(colnames(study_tab_norm), rownames(meta))){
+      rows_to_keep <- intersect(colnames(study_tab_norm), rownames(meta))
+      meta <- meta[rows_to_keep,,drop=F]
+      study_tab_norm <- study_tab_norm[,rows_to_keep]
+    }
+    auroc_res <- vector()
+    for(i in 1:length(rownames(study_tab_norm))){
+      test_data <- as.numeric(study_tab_norm[i,])
+      ### one issue is that the prediction assumes that a higher number is indicative of the second class
+      ### this is obviously not what we want in this analysis as the microbe could be up or down in either class
+      ### we will need to fix this when calculating the auroc performance
+      ### as such we will subtract the result from 0.5 and take the abs and than add 0.5 back. 
+      ### this will give us classification performance in either direction.
+      test_pred <- ROCR::prediction(predictions = test_data, labels = meta[,1])
+      test_perf <- ROCR::performance(test_pred, measure="auc")
+      test_result <- abs(0.5 - as.numeric(test_perf@y.values[1])) + 0.5
+      auroc_res <- c(auroc_res, test_result)
+      
+    }
+    
+    names(auroc_res) <- rownames(study_tab_norm)
+    
+    return(auroc_res)
+}
+```
+
+## Test above functions
+```{r, eval=F}
+### dataset where we expect 0.5 AUROC
+
+#all data is not-significant
+rep_data_p <- rep(.1, 100)
+rep_data_p_all <- rep(0.01, 100)
+
+Test_data_p <- data.frame(tool1=rep_data_p,
+                                  tool2=rep_data_p,
+                                  tool3=rep_data_p)
+
+Test_data_p_all <- data.frame(tool1=rep_data_p_all,
+                              tool2=rep_data_p_all,
+                              tool3=rep_data_p_all)
+# assign rownames (which are ASV names)
+rownames(Test_data_p_all) <- paste0("ASV", seq(1,100))
+
+
+test_data_abundance <- data.frame(matrix(1, 100, 100))
+rownames(test_data_abundance) <- paste0("ASV", seq(1,100))
+colnames(test_data_abundance) <- paste0("Sample", seq(1,100))
+
+test_data_abundance_1 <- data.frame(matrix(5, 100, 50))
+test_data_abundance_2 <- data.frame(matrix(seq(1,100), 100, 50))
+
+test_data_abundance_change <- cbind(test_data_abundance_1,
+                                    test_data_abundance_2)
+
+rownames(test_data_abundance_change) <- paste0("ASV", seq(1,100))
+colnames(test_data_abundance_change) <- paste0("Sample", seq(1,100))
+## make metadata that is clean
+rep_gp1 <- rep("case", 50)
+rep_gp2 <- rep("control", 50)
+
+test_meta <- data.frame(Comp=c(rep_gp1, rep_gp2))
+rownames(test_meta) <- paste0("Sample", seq(1,100))
+
+
+#works get
+get_AUROC_all_feats(study_tab = test_data_abundance_change, meta = test_meta)
+
+
+
+
+
+
+test_meta2 <- data.frame(Comp=c(rep(c("case","control"), 50)))
+rownames(test_meta2) <- paste0("Sample", seq(1,100))
+
+get_AUROC_all_feats(study_tab = test_data_abundance_change, meta=test_meta2)
+
+test_data_abundance_change$Sample100 <- 10
+test_data_abundance_change$Sample99 <- 98
+test_data_abundance_change$Sample98 <- 100
+
+get_AUROC_all_feats(study_tab = test_data_abundance_change, meta = test_meta)
+```
+## Calculate AUROC of all feats
+```{r, eval=F}
+cl <- makeCluster(38)
+registerDoParallel(cl)
+
+filt_AUROC_all <- foreach(i=1:length(filt_study_tab[[2]])) %dopar% {
+  get_AUROC_all_feats(filt_study_tab[[2]][[i]], meta = metadata[[i]])
+}
+stopCluster(cl)
+
+length(which(filt_AUROC_all[[1]] > 0.7))
+
+### try unfilt although I do not think this will go very well
+cl <- makeCluster(38)
+registerDoParallel(cl)
+
+unfilt_AUROC_all <- foreach(i=1:length(unfilt_study_tab[[2]])) %dopar% {
+  get_AUROC_all_feats(unfilt_study_tab[[2]][[i]], meta = metadata[[i]])
+}
+stopCluster(cl)
+saveRDS(filt_AUROC_all, "~/GitHub_Repos/Clean_Hackathon/Data/filt_AUROC_all.RDS")
+saveRDS(unfilt_AUROC_all, "~/GitHub_Repos/Clean_Hackathon/Data/unfilt_AUROC_all.RDS")
+
+### CLR Values
+
+cl <- makeCluster(38)
+registerDoParallel(cl)
+
+filt_AUROC_all_clr <- foreach(i=1:length(filt_study_tab[[2]])) %dopar% {
+  get_AUROC_all_feats(filt_study_tab[[2]][[i]], meta = metadata[[i]], norm_type = "CLR")
+}
+stopCluster(cl)
+
+
+cl <- makeCluster(38)
+registerDoParallel(cl)
+
+unfilt_AUROC_all_clr <- foreach(i=1:length(filt_study_tab[[2]])) %dopar% {
+  get_AUROC_all_feats(unfilt_study_tab[[2]][[i]], meta = metadata[[i]], norm_type = "CLR")
+}
+
+
+saveRDS(filt_AUROC_all_clr, "~/GitHub_Repos/Clean_Hackathon/Data/filt_AUROC_all_CLR.RDS")
+saveRDS(unfilt_AUROC_all_clr, "~/GitHub_Repos/Clean_Hackathon/Data/unfilt_AUROC_All_CLR.RDS")
+
+```
+
+
+# Plotting/Analysis
+
+## heatmap generation 
+
+Function for generating heatmaps
+```{r}
+
+get_median_heat <- function(p_list, AUROC_list, dataset_names, tool_rename, main="", return_data=FALSE){
+  
+  sig_AUROCs <- list()
+  for(i in 1:length(AUROC_list)){
+    sig_AUROCs[[i]] <- get_sig_AUROC(p_list[[i]][[2]], AUROC_list[[i]])
+  }
+  
+  median_vals <- matrix(-1, nrow=38, ncol=14)
+  colnames(median_vals) <- names(sig_AUROCs[[1]])
+  rownames(median_vals) <- names(p_list)
+  
+  #caluclate medians
+  for(i in 1:length(sig_AUROCs)){
+    for(tool in names(sig_AUROCs[[i]])){
+      median_vals[i, tool] <- median(sig_AUROCs[[i]][[tool]], na.rm = T)
+    }
+  }
+  rownames(median_vals) <- dataset_names[rownames(median_vals)]
+  colnames(median_vals) <- tool_rename[colnames(median_vals)]
+
+  flip_median_vals <- t(median_vals)
+
+  #order the tools by name
+  ordered_flip_median_vals <- flip_median_vals[sort(rownames(flip_median_vals)),]
+  
+  #scale them so they can be compared across rows in the heatmap
+  scaled_orded_flip_median_vals <- scale(ordered_flip_median_vals, center=T, scale=T)
+
+  #round to 2 digits
+  ordered_flip_median_vals <- round(ordered_flip_median_vals, digits = 2)
+  
+  if(return_data){
+    return(ordered_flip_median_vals)  
+  }
+  #add blank character for NA values
+  ordered_flip_median_vals[is.na(ordered_flip_median_vals)] <- "\u0020"
+
+
+  #flip matrix so rows are datasets and columns are tools
+  Scaled_heatmap <- pheatmap(t(scaled_orded_flip_median_vals),
+                                cluster_cols = F, 
+                                na_col="grey",
+                                main=main,
+                                display_numbers = t(ordered_flip_median_vals),
+                                cluster_rows = F,
+                                angle_col = "45")
+  #return heatmap
+  return(Scaled_heatmap)
+}
+
+```
+
+### Filt
+#### RA heatmap
+
+Heatmap of mean AUROC of the significant hits identified by each tool (perhaps I want to use median here....)
+```{r}
+AUROC_FILT_all_RA <- readRDS("~/GitHub_Repos/Clean_Hackathon/Data/filt_AUROC_all.RDS")
+
+
+Scaled_filt_heatmap_RA <- get_median_heat(filt_results, AUROC_FILT_all_RA, dataset_names = Data_set_names, tool_rename = tool_names,
+                                          main="Filtered RA. median AUROC sig. ASVs")
+
+
+filt_heat_data <- get_median_heat(filt_results, AUROC_FILT_all_RA, dataset_names = Data_set_names, tool_rename = tool_names,
+                                          main="Filtered RA. median AUROC sig. ASVs", return_data = T)
+write.table(x=filt_heat_data, file="~/GitHub_Repos/Clean_Hackathon/Plotting_data/Supp_figures/Supp_Fig3A.csv", col.names = NA,
+            row.names = T, quote=F, sep=",")
+```
+
+#### heatmap CLR
+Now we create the same heatmap but for CLR AUROCs rather than RA.
+```{r}
+AUROC_FILT_all_CLR <- readRDS("~/GitHub_Repos/Clean_Hackathon/Data/filt_AUROC_all_CLR.RDS")
+
+Scaled_filt_heatmap_CLR <- get_median_heat(filt_results, AUROC_FILT_all_CLR, dataset_names = Data_set_names, tool_rename = tool_names,
+                                           main="Filtered CLR median AUROC sig. ASVs")
+
+filt_heat_data_CLR <- get_median_heat(filt_results, AUROC_FILT_all_CLR, dataset_names = Data_set_names, tool_rename = tool_names,
+                                           main="Filtered CLR median AUROC sig. ASVs", return_data = T)
+
+write.table(x=filt_heat_data_CLR, file="~/GitHub_Repos/Clean_Hackathon/Plotting_data/Supp_figures/Supp_Fig3B.csv", col.names = NA,
+            row.names = T, quote=F, sep=",")
+```
+
+### UnFilt
+Same as above plots but for unfiltered data. Note that this plots are not in the main manuscript but are including in the display items folder for those that were interested in viewing them.
+#### RA heatmap
+
+```{r}
+AUROC_unFILT_all_RA <- readRDS("~/GitHub_Repos/Clean_Hackathon/Data/unfilt_AUROC_all.RDS")
+
+Scaled_unfilt_heatmap_RA <- get_median_heat(unfilt_results, AUROC_unFILT_all_RA, dataset_names = Data_set_names, tool_rename = tool_names,
+                                            main="Unfiltered RA. median AUROC sig. ASVs")
+
+```
+
+
+#### CLR heatmap
+
+```{r}
+AUROC_unFILT_all_CLR <- readRDS("~/GitHub_Repos/Clean_Hackathon/Data/unfilt_AUROC_All_CLR.RDS")
+
+
+Scaled_unfilt_heatmap_CLR <- get_median_heat(unfilt_results, AUROC_unFILT_all_CLR, dataset_names = Data_set_names, tool_rename = tool_names,
+                                             main="Unfiltered CLR. median AUROC sig. ASVs")
+
+```
+
+## Final Figure
+
+```{r}
+library(cowplot)
+
+Filtered_Fig <- plot_grid(Scaled_filt_heatmap_RA[[4]], Scaled_filt_heatmap_CLR[[4]], labels=c("A", "B"), ncol=1)
+Filtered_Fig
+
+ggsave(filename=paste(display_items_out, "Supp_figures", "Supplemental_AUROC_heatmap.pdf", sep="/"),
+       plot = Filtered_Fig, width = 9, height=13, units="in", dpi=600)
+
+ggsave(filename=paste(display_items_out, "Supp_figures", "Supplemental_AUROC_heatmap.png", sep="/"),
+       plot = Filtered_Fig, width = 9, height=13, units="in", dpi=150)
+
+
+Unfiltered_Fig <- plot_grid(Scaled_unfilt_heatmap_RA[[4]], Scaled_unfilt_heatmap_CLR[[4]], labels=c("A", "B"), ncol=1)
+Unfiltered_Fig
+
+ggsave(filename=paste(display_items_out, "Supp_figures", "AUROC_heatmap_UNFILT.pdf", sep="/"),
+       plot = Unfiltered_Fig, width = 9, height=13, units="in", dpi=600)
+
+ggsave(filename=paste(display_items_out, "Supp_figures", "AUROC_heatmap_UNFILT.png", sep="/"),
+       plot = Unfiltered_Fig, width = 9, height=13, units="in", dpi=150)
+
+```
+
+
+## Precision Recall of ASVs above X AUROC for each tool
+
+### Function
+```{r}
+# get all featurea above 0.7
+get_PR_AUROC <- function(p_tab, AUROC_tab, cutoff=0.7){
+  
+  p_tab_fix <- p_tab
+  
+  ## 2 represents a significant hit
+  p_tab_fix[p_tab_fix < 0.05 ] <- 2
+  
+  ## anything that is not 2 (sig hit) we set as 0 (i.e. negative result)
+  p_tab_fix[p_tab_fix != 2 ] <- 0
+  
+  # anything taht was 2 (sig hit) we set as 1 (i.e. positive result)
+  p_tab_fix[p_tab_fix == 2] <- 1
+  
+  #set NAs to 0
+  p_tab_fix[is.na(p_tab_fix)] <- 0
+  
+  #list to hold the results
+  disc_res <- list()
+  
+  
+  AUROC_tab_fix <- AUROC_tab
+  
+  AUROC_tab_fix[AUROC_tab_fix >= cutoff] <- 10
+  AUROC_tab_fix[AUROC_tab_fix != 10] <- 0
+  
+
+  confusion_data <- list()
+  for(i in 1:length(colnames(p_tab_fix))){
+    reference_data <- factor(ifelse(AUROC_tab_fix== 10 , "hit", "no"), levels=c("hit", "no"))
+    test_data <- factor(ifelse(p_tab_fix[,i]==1, "hit", "no"), levels=c("hit", "no"))
+    confusion_data[[i]] <- caret::confusionMatrix(test_data, reference_data, positive="hit", mode="prec_recall")
+    
+  }
+  names(confusion_data) <- colnames(p_tab_fix)
+  return(confusion_data)
+  
+}
+
+
+get_confusion_stats <- function(all_p_res, all_auroc_res, cutoff=0.7){
+  
+  recall_res <- list()
+  Prec_res <- list()
+  F1_res <- list()
+  for(i in 1:length(all_p_res)){
+    confusion_data <- get_PR_AUROC(all_p_res[[i]]$adjP_table, all_auroc_res[[i]], cutoff = cutoff)
+    ## this gives matrix for each tool we need to extract the recall from each tool
+    tool_recall <- vector()
+    Prec_tool <- vector()
+    F1_tool <- vector()
+    for(j in 1:length(confusion_data)){
+      tool_recall <- c(tool_recall, confusion_data[[j]]$byClass[6])
+      Prec_tool <- c(Prec_tool, confusion_data[[j]]$byClass[5])
+      F1_tool <- c(F1_tool, confusion_data[[j]]$byClass[7])
+    }
+    names(tool_recall) <- names(confusion_data)
+    names(Prec_tool) <- names(confusion_data)
+    names(F1_tool) <- names(confusion_data)
+    recall_res[[i]] <- tool_recall
+    Prec_res[[i]] <- Prec_tool
+    F1_res[[i]] <- F1_tool
+  }
+  names(recall_res) <- names(all_p_res)
+  names(Prec_res) <- names(all_p_res)
+  names(F1_res) <- names(all_p_res)
+  return(list(recall_res, Prec_res, F1_res))
+  
+  ## now we need to extract recall, precison, and F1
+  
+  
+}
+
+generate_plot_AUROC_plot <- function(all_p_res, all_auroc_res, cutoff=0.7){
+  
+  final_res <- get_confusion_stats(all_p_res = all_p_res, all_auroc_res = all_auroc_res, cutoff = cutoff)
+  
+  ### generate DFs
+  recall_df <- do.call(rbind, final_res[[1]])
+  prec_df <- do.call(rbind, final_res[[2]])
+  f1_df <- do.call(rbind, final_res[[3]])
+  
+  colnames(recall_df) <- tool_names[colnames(recall_df)]
+  colnames(prec_df) <- tool_names[colnames(prec_df)]
+  colnames(f1_df) <- tool_names[colnames(f1_df)]
+  ## melt them
+  melt_recall_df <- melt(recall_df)
+  melt_prec_df <- melt(prec_df)
+  melt_f1_df <- melt(f1_df)
+  
+  melt_recall_df$type <- "Recall"
+  melt_prec_df$type <- "Precision"
+  melt_f1_df$type <- "F1 Score"
+  
+  ## combind
+  comb_df <- rbind(melt_recall_df, melt_prec_df)
+  comb_df <- rbind(comb_df, melt_f1_df)
+  
+  #remove rows that are NA as they provide no information
+  comb_df <- na.omit(comb_df)
+
+  comb_plot <- ggplot(comb_df, aes(x=Var2, y=value)) + geom_boxplot() + xlab("Tool") + ylab("") + geom_quasirandom(pch=21, groupOnX = T) +
+    facet_grid(rows=vars(type)) + theme_bw() + theme(plot.title = element_text(hjust=0.5))
+}
+```
+
+## Test above functions
+```{r}
+test_all_aurocs <- c(1:100/100)
+test_all_aurocs
+
+rep_data_p <- rep(.1, 100)
+rep_data_p_all <- rep(0.01, 100)
+rep_data_p_alt <- rep(c(.1, 0.01), 50)
+
+Test_data_p <- data.frame(aldex2=rep_data_p,
+                                  ancom=rep_data_p,
+                                  corncob=rep_data_p)
+
+Test_data_p_all <- data.frame(aldex2=rep_data_p_all,
+                              ancom=rep_data_p_all,
+                              corncob=rep_data_p_all)
+
+Test_data_p_alt <- data.frame(aldex2=rep_data_p_alt,
+                              ancom=rep_data_p_alt,
+                              corncob=rep_data_p_alt)
+
+# assign rownames (which are ASV names)
+rownames(Test_data_p_all) <- paste0("ASV", seq(1,100))
+
+test_all_p <- list("rawr"=Test_data_p_all, 'adjP_table'=Test_data_p_all)
+test_no_p <- list("rawr"=Test_data_p, 'adjP_table'=Test_data_p)
+test_alt_p <- list("rawr"=Test_data_p_alt, 'adjP_table'=Test_data_p_alt)
+
+test_all_p_list <- list(test_all_p, test_no_p, test_alt_p)
+test_all_aurocs_list <- list(test_all_aurocs, test_all_aurocs, test_all_aurocs)
+
+#okay that is exactly as I would expect to get
+get_PR_AUROC(Test_data_p_all, test_all_aurocs)
+#none are significant so recall should be NA and so is prec. 
+
+get_PR_AUROC(Test_data_p, test_all_aurocs)
+#when non are significant it says Precision is NA.
+
+get_PR_AUROC(Test_data_p_alt, test_all_aurocs)
+
+
+test_res <- get_confusion_stats(test_all_p_list, test_all_aurocs_list)
+## first thing in list is recall, second is prec, third is f1
+
+test_plot <- generate_plot_AUROC_plot(all_p_res = test_all_p_list, all_auroc_res = test_all_aurocs_list, cutoff = 0.7)
+test_plot
+
+# okay that makes sense!
+
+```
+
+### Data Analysis
+
+#### load data
+```{r}
+filt_AUROC_all <- readRDS("~/GitHub_Repos/Clean_Hackathon/Data/filt_AUROC_all.RDS")
+unfilt_AUROC_all <- readRDS("~/GitHub_Repos/Clean_Hackathon/Data/unfilt_AUROC_all.RDS")
+filt_AUROC_all_clr <- readRDS("~/GitHub_Repos/Clean_Hackathon/Data/filt_AUROC_all_CLR.RDS")
+unfilt_AUROC_all_clr <- readRDS("~/GitHub_Repos/Clean_Hackathon/Data/unfilt_AUROC_All_CLR.RDS")
+```
+
+#### 0.7 RA Filt
+```{r}
+plot_07 <- generate_plot_AUROC_plot(filt_results, filt_AUROC_all, cutoff=0.7) + ggtitle("RA. 0.7 AUROC") + theme(axis.text.x = element_text(angle=35, vjust=.65),
+                                                                                                                 axis.title.x = element_blank())
+
+median_07_filt <- aggregate(plot_07$data$value, by=list(plot_07$data$Var2, plot_07$data$type), FUN=function(x) median(x, na.rm=T))
+#median precision
+dplyr::filter(median_07_filt, Group.2=="Precision") %>% arrange(x)
+#median recall
+dplyr::filter(median_07_filt, Group.2=="Recall") %>% arrange(x)
+
+
+SD_07_filt <- aggregate(plot_07$data$value, by=list(plot_07$data$Var2, plot_07$data$type), FUN=function(x) sd(x, na.rm=T))
+#sd precision
+dplyr::filter(SD_07_filt, Group.2=="Precision") %>% arrange(x)
+
+#write out csv file that contains plotting data
+write.table(x=plot_07$data, file="~/GitHub_Repos/Clean_Hackathon/Plotting_data/Supp_figures/Supp_Fig4_RA_07.csv", col.names = NA, 
+            row.names = T, quote=F, sep=",")
+```
+
+#### 0.9 RA Filt
+````{r}
+plot_09 <- generate_plot_AUROC_plot(filt_results, filt_AUROC_all, cutoff=0.9) + ggtitle("RA. 0.9 AUROC") + theme(axis.text.x = element_text(angle=35, vjust=.65))
+
+
+
+median_09_filt <- aggregate(plot_09$data$value, by=list(plot_09$data$Var2, plot_09$data$type), FUN=function(x) median(x, na.rm=T))
+#get median precision
+dplyr::filter(median_09_filt, Group.2=="Precision") %>% arrange(x)
+
+#get median recall
+dplyr::filter(median_09_filt, Group.2=="Recall") %>% arrange(x)
+
+
+#write csv used to plot data
+write.table(x=plot_09$data, file="~/GitHub_Repos/Clean_Hackathon/Plotting_data/Supp_figures/Supp_Fig4_RA_09.csv", col.names = NA,
+            row.names = T, quote=F, sep=",")
+#generate RA part of supplemental figure
+filt_RA <- plot_grid(plot_07, plot_09, ncol=1)
+```
+
+#### 0.7 CLR filt
+```{r}
+plot_07_CLR <- generate_plot_AUROC_plot(filt_results, filt_AUROC_all_clr, cutoff=0.7) + ggtitle("CLR. 0.7 AUROC") + theme(axis.text.x = element_text(angle=35, vjust=.65), axis.title.x = element_blank())
+
+
+plot_07_CLR_data <- aggregate(plot_07_CLR$data$value, by=list(plot_07_CLR$data$Var2, plot_07_CLR$data$type), FUN=function(x) median(x, na.rm=T))
+#get median precision
+dplyr::filter(plot_07_CLR_data, Group.2=="Precision") %>% arrange(x)
+#get median recall
+dplyr::filter(plot_07_CLR_data, Group.2=="Recall") %>% arrange(x)
+#get median F1
+dplyr::filter(plot_07_CLR_data, Group.2=="F1 Score") %>% arrange(x)
+
+SD_plot_07_CLR_data <- aggregate(plot_07_CLR$data$value, by=list(plot_07_CLR$data$Var2, plot_07_CLR$data$type), FUN=function(x) sd(x, na.rm=T))
+#get SD
+dplyr::filter(SD_plot_07_CLR_data, Group.2=="Precision") %>% arrange(x)
+
+#write csv used to plot data
+write.table(x=plot_07_CLR$data, file="~/GitHub_Repos/Clean_Hackathon/Plotting_data/Supp_figures/Supp_Fig4_CLR_07.csv",  col.names = NA,
+            row.names = T, quote=F, sep=",")
+```
+
+#### 0.9 CLR Filt
+```{r}
+plot_09_CLR <- generate_plot_AUROC_plot(filt_results, filt_AUROC_all_clr, cutoff=0.9) + ggtitle("CLR. 0.9 AUROC") + theme(axis.text.x = element_text(angle=35, vjust=.65))
+
+
+filt_CLR <- plot_grid(plot_07_CLR, plot_09_CLR, ncol=1)
+
+plot_09_CLR_data <- aggregate(plot_09_CLR$data$value, by=list(plot_09_CLR$data$Var2, plot_09_CLR$data$type), FUN=function(x) median(x, na.rm=T))
+#median recall
+dplyr::filter(plot_09_CLR_data, Group.2=="Recall") %>% arrange(x)
+
+#median Precision
+dplyr::filter(plot_09_CLR_data, Group.2=="Precision") %>% arrange(x)
+
+#write plotting data
+write.table(x=plot_09_CLR$data, file="~/GitHub_Repos/Clean_Hackathon/Plotting_data/Supp_figures/Supp_Fig4_CLR_09.csv", col.names = NA,
+            row.names = T, quote=F, sep=",")
+```
+
+#### Unfilt
+These plots were not including in the manuscript due to length resitrictions. That being said they show similar trends as the filtered data. 
+##### 0.7 RA UnFilt
+````{r}
+plot_07_unfilt_RA <- generate_plot_AUROC_plot(unfilt_results, unfilt_AUROC_all) + ggtitle("RA. 0.7 AUROC")
+```
+
+##### 0.9 RA UnFilt
+```{r}
+plot_09_unfilt_RA <- generate_plot_AUROC_plot(unfilt_results, unfilt_AUROC_all, cutoff=0.9) + ggtitle("RA. 0.9 AUROC")
+
+unfilt_RA <- plot_grid(plot_07_unfilt_RA, plot_09_unfilt_RA, ncol=1)
+```
+
+
+##### 0.7 CLR Unfilt
+```{r}
+plot_07_unfilt_CLR <- generate_plot_AUROC_plot(unfilt_results, unfilt_AUROC_all_clr, cutoff = 0.7) + ggtitle("AUROC Cutoff 0.7")
+```
+
+##### 0.9 CLR Unfilt
+```{r}
+plot_09_unfilt_CLR <- generate_plot_AUROC_plot(unfilt_results, unfilt_AUROC_all_clr, cutoff = 0.9) + ggtitle("AUROC Cutoff 0.9")
+
+unfilt_CLR <- plot_grid(plot_07_unfilt_CLR, plot_09_unfilt_CLR, ncol=1)
+```
+
+### Final Figure Generation
+```{r}
+final_sup_fig <-plot_grid(filt_RA, filt_CLR)
+final_sup_fig
+
+ggsave(filename=paste(display_items_out, "Supp_figures", "Supp_Fig4.pdf", sep="/"),
+       plot = final_sup_fig, width = 9, height=13, units="in", dpi=600)
+
+ggsave(filename=paste(display_items_out, "Supp_figures", "Supp_Fig4.png", sep="/"),
+       plot = final_sup_fig, width = 9, height=13, units="in", dpi=150)
+
+ggsave(filename=paste(display_items_out, "Misc_figures", "Supplemental_AUROC_F1_unfilt.pdf", sep="/"),
+       plot = final_sup_fig_unfilt, width = 9, height=13, units="in", dpi=600)
+
+ggsave(filename=paste(display_items_out, "Misc_figures", "Supplemental_AUROC_F1_unfilt.png", sep="/"),
+       plot = final_sup_fig_unfilt, width = 9, height=13, units="in", dpi=150)
+
+```
