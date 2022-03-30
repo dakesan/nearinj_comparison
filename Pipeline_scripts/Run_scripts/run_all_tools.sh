@@ -55,6 +55,9 @@ Run_Ancom2()
 Run_Lefse()
 {
     ## Would like to find a way around activiating this environment to run this as it does take some time to run...
+	#* hackathonはlefseの仮想環境らしい。
+	#* 最新のlefseをみると、run_lefse.pyは存在しない
+	#! https://github.com/SegataLab/lefse/blob/master/lefse/lefse_run.py
     source activate hackathon
     echo "Running Lefse on rarified input table"
     mkdir $Output_Path/Lefse_out

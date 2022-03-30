@@ -7,14 +7,15 @@ for (dep in deps){
   library(dep, character.only = TRUE)
 }
 
-#args[4] will contain path for the ancom code
-
-
 args <- commandArgs(trailingOnly = TRUE)
 
 if (length(args) <= 3) {
   stop("At least three arguments must be supplied", call.=FALSE)
 }
+
+#args[4] will contain path for the ancom code
+#* ANCOM.Rは以下のURLにあります
+#* https://github.com/FrederickHuangLin/ANCOM/blob/master/programs/ancom.R
 
 source(args[[4]])
 
